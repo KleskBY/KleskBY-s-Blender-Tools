@@ -2,7 +2,7 @@
  Blender Tools from KleskBY
 <br>
 <h3>BakeLightmapsToTexture.py</h3> 
-This addons is a magic button that will automaticly bake textures and/or lightmaps to a single image. <br>
+This addons is a magic button that will automatically bake textures and/or lightmaps to a single image to export or use inside game engine.<br>
 <hr>
 <h3>TextureFill.py</h3> 
 This addons allows you to easy assign and tile textures over object. Works like Trenchbroom or other BSP tree software.<br>
