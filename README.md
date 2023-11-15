@@ -5,7 +5,7 @@
 This addons is a magic button that will automatically bake textures and/or lightmaps to a single image to export or use inside the game engine.<br>
 <hr>
 <h3>TextureFill.py</h3> 
-This addons allows you to easy assign and tile textures over object. Works like Trenchbroom or other BSP tree software.<br>
+This addons allows you to easily assign and tile textures over objects. Works like Trenchbroom or other BSP tree software.<br>
 <hr>
 <h3>RemoveDuplicateMaterials.py</h3> 
 This addons will remove duplicated materials (MaterialName.001, MaterialName.002) and assign original material (MaterialName).<br>
