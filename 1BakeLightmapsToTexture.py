@@ -140,13 +140,14 @@ class BakerClass(bpy.types.Operator):
             was_edit_mode = True
     
         for obj in bpy.context.selected_objects:
-            CleanModel(context)
-            EditMaterials(context)
-            self.report({'INFO'}, "Geometry optimised and Material Set")
-            SmartUVProject(context)
-            self.report({'INFO'}, "UVs projected, Bake started")
-            Bake(context)
-            self.report({'INFO'}, "Model cleaned!")
+            if obj.type == 'MESH':
+                CleanModel(context)
+                EditMaterials(context)
+                self.report({'INFO'}, "Geometry optimised and Material Set")
+                SmartUVProject(context)
+                self.report({'INFO'}, "UVs projected, Bake started")
+                Bake(context)
+                self.report({'INFO'}, "Model cleaned!")
             
         if was_edit_mode:
             bpy.ops.object.mode_set(mode='EDIT')
@@ -161,6 +162,7 @@ class BakerPanel(bpy.types.Panel):
 
     def draw(self, context):
         ob = context.active_object
+        layout = self.layout
         if ob:
             layout = self.layout
             col = layout.row(align=True)
@@ -169,6 +171,8 @@ class BakerPanel(bpy.types.Panel):
             col.prop(ob, "bake_resolution")
             col = layout.row(align=True)
             col.operator("scene.baketexture", text="BAKE")
+        else:
+            layout.label(text="Select an object")
 
 
 def menu_func(self, context):

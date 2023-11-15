@@ -18,7 +18,7 @@ bl_info = {
 }
 
 bpy.types.Object.ceiling_texture_scale_offset = bpy.props.FloatVectorProperty(
-    name="Ceiling Scale Offset",
+    name="Top scale",
     default=(1, 1),
     min=0,
     step=10,
@@ -26,7 +26,7 @@ bpy.types.Object.ceiling_texture_scale_offset = bpy.props.FloatVectorProperty(
     size=2
 )
 bpy.types.Object.wall_texture_scale_offset = bpy.props.FloatVectorProperty(
-    name="Wall Scale Offset",
+    name="Wall Scale",
     default=(1, 1),
     min=0,
     step=10,
@@ -34,7 +34,7 @@ bpy.types.Object.wall_texture_scale_offset = bpy.props.FloatVectorProperty(
     size=2
 )
 bpy.types.Object.floor_texture_scale_offset = bpy.props.FloatVectorProperty(
-    name="Floor Scale Offset",
+    name="Bottom Scale",
     default=(1, 1),
     min=0,
     step=10,
@@ -42,21 +42,21 @@ bpy.types.Object.floor_texture_scale_offset = bpy.props.FloatVectorProperty(
     size=2
 )
 bpy.types.Object.ceiling_texture_rotation = bpy.props.FloatProperty(
-    name="Ceiling Rotation",
+    name="Top rotation",
     default=0,
     min=0,
     step=10,
     precision=3,
 )
 bpy.types.Object.wall_texture_rotation = bpy.props.FloatProperty(
-    name="Wall Rotation",
+    name="Wall rotation",
     default=0,
     min=0,
     step=10,
     precision=3,
 )
 bpy.types.Object.floor_texture_rotation = bpy.props.FloatProperty(
-    name="Floor Rotation",
+    name="Bottom rotation",
     default=0,
     min=0,
     step=10,
@@ -64,7 +64,7 @@ bpy.types.Object.floor_texture_rotation = bpy.props.FloatProperty(
 )
 
 bpy.types.Object.ceiling_texture_offset = bpy.props.FloatVectorProperty(
-    name="Ceiling Offset",
+    name="Top offset",
     default=(0, 0),
     min=0,
     step=10,
@@ -72,7 +72,7 @@ bpy.types.Object.ceiling_texture_offset = bpy.props.FloatVectorProperty(
     size=2
 )
 bpy.types.Object.wall_texture_offset = bpy.props.FloatVectorProperty(
-    name="Wall Scale Offset",
+    name="Wall offset",
     default=(0, 0),
     min=0,
     step=10,
@@ -80,7 +80,7 @@ bpy.types.Object.wall_texture_offset = bpy.props.FloatVectorProperty(
     size=2
 )
 bpy.types.Object.floor_texture_offset = bpy.props.FloatVectorProperty(
-    name="Floor Offset",
+    name="Bottom offset",
     default=(0, 0),
     min=0,
     step=10,
@@ -204,7 +204,8 @@ class FillTextureClass(bpy.types.Operator):
             was_edit_mode = True
     
         for obj in bpy.context.selected_objects:
-            FillTextureClass.auto_texture(obj)
+            if obj.type == 'MESH':
+                FillTextureClass.auto_texture(obj)
             
         if was_edit_mode:
             bpy.ops.object.mode_set(mode='EDIT')
@@ -213,14 +214,15 @@ class FillTextureClass(bpy.types.Operator):
 
 class TexturePanel(bpy.types.Panel):
     bl_label = "Texture"
+    bl_idname = "TexturePanel_PT_main_panel"
     bl_space_type = "VIEW_3D"
     bl_region_type = 'UI'
     bl_category = 'Texture'
 
     def draw(self, context):
         ob = context.active_object
+        layout = self.layout
         if ob:
-            layout = self.layout
             col = layout.column(align=True)
             col = layout.row(align=True)
             col.prop(ob, "ceiling_texture_scale_offset")
@@ -242,6 +244,9 @@ class TexturePanel(bpy.types.Panel):
             col.prop(ob, "floor_texture_offset")
             col = layout.row(align=True)
             col.operator("scene.filltexture", text="APPLY", icon="MOD_BUILD")
+        else:
+            layout.label(text="Select an object")
+
 
 
 def menu_func(self, context):
