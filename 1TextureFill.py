@@ -1,215 +1,156 @@
-
-
-from copy import copy
-import os
 import math
+
 import bpy
 import bmesh
-import addon_utils
-from bpy_extras.io_utils import ImportHelper
+from bpy.props import BoolProperty, FloatProperty, FloatVectorProperty
 
 bl_info = {
     "name": "Fill Texture",
     "author": "KleskBY",
-    "version": (1, 0),
+    "version": (1, 2),
     "blender": (3, 0, 0),
     "description": "Fill a texture over the object.",
     "category": "Scene",
 }
 
-bpy.types.Object.ceiling_texture_scale_offset = bpy.props.FloatVectorProperty(
-    name="Top scale",
-    default=(1, 1),
-    min=0,
-    step=10,
-    precision=3,
-    size=2
-)
-bpy.types.Object.wall_texture_scale_offset = bpy.props.FloatVectorProperty(
-    name="Wall Scale",
-    default=(1, 1),
-    min=0,
-    step=10,
-    precision=3,
-    size=2
-)
-bpy.types.Object.floor_texture_scale_offset = bpy.props.FloatVectorProperty(
-    name="Bottom Scale",
-    default=(1, 1),
-    min=0,
-    step=10,
-    precision=3,
-    size=2
-)
-bpy.types.Object.ceiling_texture_rotation = bpy.props.FloatProperty(
-    name="Top rotation",
-    default=0,
-    min=0,
-    step=10,
-    precision=3,
-)
-bpy.types.Object.wall_texture_rotation = bpy.props.FloatProperty(
-    name="Wall rotation",
-    default=0,
-    min=0,
-    step=10,
-    precision=3,
-)
-bpy.types.Object.floor_texture_rotation = bpy.props.FloatProperty(
-    name="Bottom rotation",
-    default=0,
-    min=0,
-    step=10,
-    precision=3,
-)
+# (property prefix, label). "ceiling" is the +Z side, "floor" the -Z side.
+SURFACES = (("ceiling", "Top"), ("wall", "Wall"), ("floor", "Bottom"))
 
-bpy.types.Object.ceiling_texture_offset = bpy.props.FloatVectorProperty(
-    name="Top offset",
-    default=(0, 0),
-    min=0,
-    step=10,
-    precision=3,
-    size=2
-)
-bpy.types.Object.wall_texture_offset = bpy.props.FloatVectorProperty(
-    name="Wall offset",
-    default=(0, 0),
-    min=0,
-    step=10,
-    precision=3,
-    size=2
-)
-bpy.types.Object.floor_texture_offset = bpy.props.FloatVectorProperty(
-    name="Bottom offset",
-    default=(0, 0),
-    min=0,
-    step=10,
-    precision=3,
-    size=2
-)
+
+def object_props():
+    """Per-object settings. Names are unchanged, so values saved in old .blend files still load."""
+    props = {}
+    for key, label in SURFACES:
+        props[key + "_texture_scale_offset"] = FloatVectorProperty(
+            name=label + " scale", default=(1, 1), step=10, precision=3, size=2)
+        props[key + "_texture_rotation"] = FloatProperty(
+            name=label + " rotation", description="Degrees", default=0, step=10, precision=3)
+        props[key + "_texture_offset"] = FloatVectorProperty(
+            name=label + " offset", default=(0, 0), step=10, precision=3, size=2)
+    return props
+
+
+def surface_params(obj):
+    """{surface: (cos, sin, scale_u, scale_v, offset_u, offset_v)}, read once per object."""
+    params = {}
+    for key, _ in SURFACES:
+        rot = math.radians(getattr(obj, key + "_texture_rotation"))
+        sx, sy = getattr(obj, key + "_texture_scale_offset")
+        ox, oy = getattr(obj, key + "_texture_offset")
+        params[key] = (math.cos(rot), math.sin(rot), sx, sy, ox, oy)
+    return params
+
+
+def face_axis(n):
+    """Dominant axis of a world-space normal: ('x'|'y'|'z', points_negative)."""
+    ax, ay, az = abs(n.x), abs(n.y), abs(n.z)
+    if ax >= ay and ax >= az:
+        return 'x', n.x < 0
+    if ay >= az:
+        return 'y', n.y < 0
+    return 'z', n.z < 0
+
+
+def planar_uv(axis, negative, p, fix_mirroring):
+    """Project world position p onto the face plane. Returns (u, v, surface)."""
+    if axis == 'x':
+        u, v, surface, flip = p.y, p.z, "wall", negative
+    elif axis == 'y':
+        u, v, surface, flip = p.x, p.z, "wall", not negative
+    else:
+        u, v, surface, flip = p.x, p.y, ("floor" if negative else "ceiling"), negative
+    # Seen from the front, the faces that point to -X, +Y and -Z run right to left.
+    if fix_mirroring and flip:
+        u = -u
+    return u, v, surface
+
+
+def fill_bmesh(bm, matrix_world, params, fix_mirroring, selected_only):
+    """Write world-space planar UVs. Returns the number of faces filled."""
+    bm.normal_update()
+    normal_matrix = matrix_world.to_3x3().inverted_safe().transposed()
+    uv_layer = bm.loops.layers.uv.active or bm.loops.layers.uv.verify()
+
+    world = {}  # vertex -> world position, each computed once
+    count = 0
+    for face in bm.faces:
+        if selected_only and not face.select:
+            continue
+        normal = normal_matrix @ face.normal
+        if normal.length_squared == 0.0:
+            continue
+        axis, negative = face_axis(normal)
+        for loop in face.loops:
+            vert = loop.vert
+            p = world.get(vert)
+            if p is None:
+                p = world[vert] = matrix_world @ vert.co
+            u, v, surface = planar_uv(axis, negative, p, fix_mirroring)
+            c, s, sx, sy, ox, oy = params[surface]
+            loop[uv_layer].uv = ((u * c - v * s) * sx + ox, (u * s + v * c) * sy + oy)
+        count += 1
+    return count
+
 
 class FillTextureClass(bpy.types.Operator):
-    """FillTexture"""      # Use this as a tooltip for menu items and buttons.
-    bl_idname = "scene.filltexture"        # Unique identifier for buttons and menu items to reference.
-    bl_label = "FillTexture"         # Display name in the interface.
-    bl_options = {'REGISTER', 'UNDO'}  # Enable undo for the operator.
+    """Project the texture onto the faces by world position, like TrenchBroom"""
+    bl_idname = "scene.filltexture"
+    bl_label = "FillTexture"
+    bl_options = {'REGISTER', 'UNDO'}
 
-    def translate(val, t):
-        return val + t
+    selected_faces_only: BoolProperty(
+        name="Selected Faces Only",
+        description="In Edit Mode, only fill the selected faces",
+        default=True,
+    )
+    fix_mirroring: BoolProperty(
+        name="Fix Mirrored Faces",
+        description="Flip U on faces pointing to -X, +Y and -Z so the texture reads correctly from the front",
+        default=True,
+    )
 
-    def scale(val, s):
-        return val * s
+    @classmethod
+    def poll(cls, context):
+        if context.mode == 'EDIT_MESH':
+            return True
+        return context.mode == 'OBJECT' and any(o.type == 'MESH' for o in context.selected_objects)
 
-    def rotate2D(uv, degrees):
-        radians = math.radians(degrees)
-        newUV = copy(uv)
-        newUV.x = uv.x*math.cos(radians) - uv.y*math.sin(radians)
-        newUV.y = uv.x*math.sin(radians) + uv.y*math.cos(radians)
-        return newUV
-
-    def auto_texture(source_obj):
-        mesh = source_obj.data
-        objectLocation = source_obj.location
-        objectScale = source_obj.scale
-        
-        bm = bmesh.new()
-        bm.from_mesh(mesh)
-
-        uv_layer = bm.loops.layers.uv.verify()
-        for f in bm.faces:
-            nX = f.normal.x
-            nY = f.normal.y
-            nZ = f.normal.z
-            if nX < 0:
-                nX = nX * -1
-            if nY < 0:
-                nY = nY * -1
-            if nZ < 0:
-                nZ = nZ * -1
-            faceNormalLargest = nX
-            faceDirection = "x"
-            if faceNormalLargest < nY:
-                faceNormalLargest = nY
-                faceDirection = "y"
-            if faceNormalLargest < nZ:
-                faceNormalLargest = nZ
-                faceDirection = "z"
-            if faceDirection == "x":
-                if f.normal.x < 0:
-                    faceDirection = "-x"
-            if faceDirection == "y":
-                if f.normal.y < 0:
-                    faceDirection = "-y"
-            if faceDirection == "z":
-                if f.normal.z < 0:
-                    faceDirection = "-z"
-            for l in f.loops:
-                luv = l[uv_layer]
-                if faceDirection == "x":
-                    luv.uv.x = ((l.vert.co.y * objectScale[1]) + objectLocation[1])
-                    luv.uv.y = ((l.vert.co.z * objectScale[2]) + objectLocation[2])
-                    luv.uv = FillTextureClass.rotate2D(luv.uv, source_obj.wall_texture_rotation)
-                    luv.uv.x = FillTextureClass.translate(FillTextureClass.scale(luv.uv.x, source_obj.wall_texture_scale_offset[0]), 0)
-                    luv.uv.y = FillTextureClass.translate(FillTextureClass.scale(luv.uv.y, source_obj.wall_texture_scale_offset[1]), 0)
-                    luv.uv.x = luv.uv.x + source_obj.wall_texture_offset[0];
-                    luv.uv.y = luv.uv.y + source_obj.wall_texture_offset[1];
-                if faceDirection == "-x":
-                    luv.uv.x = ((l.vert.co.y * objectScale[1]) + objectLocation[1])
-                    luv.uv.y = ((l.vert.co.z * objectScale[2]) + objectLocation[2])
-                    luv.uv = FillTextureClass.rotate2D(luv.uv, source_obj.wall_texture_rotation)
-                    luv.uv.x = FillTextureClass.translate(FillTextureClass.scale(luv.uv.x, source_obj.wall_texture_scale_offset[0]), 0)
-                    luv.uv.y = FillTextureClass.translate(FillTextureClass.scale(luv.uv.y, source_obj.wall_texture_scale_offset[1]), 0)
-                    luv.uv.x = luv.uv.x + source_obj.wall_texture_offset[0];
-                    luv.uv.y = luv.uv.y + source_obj.wall_texture_offset[1];
-                if faceDirection == "y":
-                    luv.uv.x = ((l.vert.co.x * objectScale[0]) + objectLocation[0])
-                    luv.uv.y = ((l.vert.co.z * objectScale[2]) + objectLocation[2])
-                    luv.uv = FillTextureClass.rotate2D(luv.uv, source_obj.wall_texture_rotation)
-                    luv.uv.x = FillTextureClass.translate(FillTextureClass.scale(luv.uv.x, source_obj.wall_texture_scale_offset[0]), 0)
-                    luv.uv.y = FillTextureClass.translate(FillTextureClass.scale(luv.uv.y, source_obj.wall_texture_scale_offset[1]), 0)
-                    luv.uv.x = luv.uv.x + source_obj.wall_texture_offset[0];
-                    luv.uv.y = luv.uv.y + source_obj.wall_texture_offset[1];
-                if faceDirection == "-y":
-                    luv.uv.x = ((l.vert.co.x * objectScale[0]) + objectLocation[0])
-                    luv.uv.y = ((l.vert.co.z * objectScale[2]) + objectLocation[2])
-                    luv.uv = FillTextureClass.rotate2D(luv.uv, source_obj.wall_texture_rotation)
-                    luv.uv.x =  FillTextureClass.translate(FillTextureClass.scale(luv.uv.x, source_obj.wall_texture_scale_offset[0]), 0)
-                    luv.uv.y =  FillTextureClass.translate(FillTextureClass.scale(luv.uv.y, source_obj.wall_texture_scale_offset[1]), 0)
-                    luv.uv.x = luv.uv.x + source_obj.wall_texture_offset[0];
-                    luv.uv.y = luv.uv.y + source_obj.wall_texture_offset[1];
-                if faceDirection == "z":
-                    luv.uv.x = ((l.vert.co.x * objectScale[0]) + objectLocation[0])
-                    luv.uv.y = ((l.vert.co.y * objectScale[1]) + objectLocation[1])
-                    luv.uv = FillTextureClass.rotate2D(luv.uv, source_obj.ceiling_texture_rotation)
-                    luv.uv.x =  FillTextureClass.translate(FillTextureClass.scale(luv.uv.x, source_obj.ceiling_texture_scale_offset[0]), 0)
-                    luv.uv.y =  FillTextureClass.translate(FillTextureClass.scale(luv.uv.y, source_obj.ceiling_texture_scale_offset[1]), 0)
-                    luv.uv.x = luv.uv.x + source_obj.ceiling_texture_offset[0];
-                    luv.uv.y = luv.uv.y + source_obj.ceiling_texture_offset[1];
-                if faceDirection == "-z":
-                    luv.uv.x = ((l.vert.co.x * objectScale[0]) + objectLocation[0])
-                    luv.uv.y = ((l.vert.co.y * objectScale[1]) + objectLocation[1])
-                    luv.uv = FillTextureClass.rotate2D(luv.uv, source_obj.floor_texture_rotation)
-                    luv.uv.x =  FillTextureClass.translate(FillTextureClass.scale(luv.uv.x, source_obj.floor_texture_scale_offset[0]), 0)
-                    luv.uv.y =  FillTextureClass.translate(FillTextureClass.scale(luv.uv.y, source_obj.floor_texture_scale_offset[1]), 0)
-                    luv.uv.x = luv.uv.x + source_obj.floor_texture_offset[0];
-                    luv.uv.y = luv.uv.y + source_obj.floor_texture_offset[1];
-        bm.to_mesh(mesh)
-        bm.free()
-        source_obj.data = mesh
-        
     def execute(self, context):
-        was_edit_mode = False
-        if bpy.context.mode == 'EDIT_MESH':
-            bpy.ops.object.mode_set(mode='OBJECT')
-            was_edit_mode = True
-    
-        for obj in bpy.context.selected_objects:
-            if obj.type == 'MESH':
-                FillTextureClass.auto_texture(obj)
-            
-        if was_edit_mode:
-            bpy.ops.object.mode_set(mode='EDIT')
-        return {'FINISHED'} 
+        faces = 0
+        skipped = 0
+
+        if context.mode == 'EDIT_MESH':
+            for obj in context.objects_in_mode_unique_data:
+                if obj.type != 'MESH':
+                    continue
+                bm = bmesh.from_edit_mesh(obj.data)
+                faces += fill_bmesh(bm, obj.matrix_world, surface_params(obj),
+                                    self.fix_mirroring, self.selected_faces_only)
+                bmesh.update_edit_mesh(obj.data, loop_triangles=False, destructive=False)
+            if not faces:
+                self.report({'WARNING'}, "No faces selected")
+                return {'CANCELLED'}
+        else:
+            done = set()
+            for obj in context.selected_objects:
+                if obj.type != 'MESH':
+                    continue
+                mesh = obj.data
+                if mesh.as_pointer() in done:  # linked duplicates: the first object wins
+                    skipped += 1
+                    continue
+                done.add(mesh.as_pointer())
+                bm = bmesh.new()
+                bm.from_mesh(mesh)
+                faces += fill_bmesh(bm, obj.matrix_world, surface_params(obj), self.fix_mirroring, False)
+                bm.to_mesh(mesh)
+                bm.free()
+                mesh.update()
+
+        if skipped:
+            self.report({'WARNING'}, "%d object(s) skipped: they share mesh data with another selected object" % skipped)
+        self.report({'INFO'}, "Filled %d face(s)" % faces)
+        return {'FINISHED'}
 
 
 class TexturePanel(bpy.types.Panel):
@@ -222,44 +163,42 @@ class TexturePanel(bpy.types.Panel):
     def draw(self, context):
         ob = context.active_object
         layout = self.layout
-        if ob:
-            col = layout.column(align=True)
-            col = layout.row(align=True)
-            col.prop(ob, "ceiling_texture_scale_offset")
-            col = layout.row(align=True)
-            col.prop(ob, "wall_texture_scale_offset")
-            col = layout.row(align=True)
-            col.prop(ob, "floor_texture_scale_offset")
-            col = layout.row(align=True)
-            col.prop(ob, "ceiling_texture_rotation")
-            col = layout.row(align=True)
-            col.prop(ob, "wall_texture_rotation")
-            col = layout.row(align=True)
-            col.prop(ob, "floor_texture_rotation")
-            col = layout.row(align=True)
-            col.prop(ob, "ceiling_texture_offset")
-            col = layout.row(align=True)
-            col.prop(ob, "wall_texture_offset")
-            col = layout.row(align=True)
-            col.prop(ob, "floor_texture_offset")
-            col = layout.row(align=True)
-            col.operator("scene.filltexture", text="APPLY", icon="MOD_BUILD")
-        else:
-            layout.label(text="Select an object")
-
+        if ob is None or ob.type != 'MESH':
+            layout.label(text="Select a mesh object")
+            return
+        for key, label in SURFACES:
+            box = layout.box()
+            box.label(text=label)
+            col = box.column(align=True)
+            col.prop(ob, key + "_texture_scale_offset", text="Scale")
+            col.prop(ob, key + "_texture_rotation", text="Rotation")
+            col.prop(ob, key + "_texture_offset", text="Offset")
+        layout.operator("scene.filltexture", text="APPLY", icon="MOD_BUILD")
 
 
 def menu_func(self, context):
     self.layout.operator(FillTextureClass.bl_idname)
 
+
+classes = (FillTextureClass, TexturePanel)
+
+
 def register():
-    bpy.utils.register_class(FillTextureClass)
-    bpy.utils.register_class(TexturePanel)
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    for name, prop in object_props().items():
+        setattr(bpy.types.Object, name, prop)
     bpy.types.VIEW3D_MT_object.append(menu_func)
 
+
 def unregister():
-    bpy.utils.unregister_class(FillTextureClass)
-    bpy.utils.unregister_class(TexturePanel)
+    bpy.types.VIEW3D_MT_object.remove(menu_func)
+    for name in object_props():
+        if hasattr(bpy.types.Object, name):
+            delattr(bpy.types.Object, name)
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+
 
 if __name__ == "__main__":
     register()
